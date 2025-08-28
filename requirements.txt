@@ -1,0 +1,31 @@
+# Core Framework
+fastapi
+uvicorn[standard]
+
+# LangGraph and LangChain
+langgraph
+langchain-core
+langchain-community
+langchain-google-genai
+
+# HTTP Client
+httpx
+requests
+
+# Data Processing
+pydantic
+
+# Authentication & Security
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client
+
+# Utilities
+python-dotenv
+schedule
+python-multipart
+
+# Development & Testing
+pytest
+pytest-asyncio
