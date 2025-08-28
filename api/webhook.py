@@ -69,8 +69,17 @@ class WebhookHandler:
                 if '@Support Ticket Automation' in message.content or 'Support Ticket Automation' in message.content:
                     logger.info(f"Bot mentioned in message: {message.content}")
                     
-                    # Send immediate acknowledgment
+                    # Check if a ticket already exists for this message
                     credentials_manager = CredentialsManager()
+                    servicenow = ServiceNowAPI(credentials_manager.servicenow_credentials)
+                    existing_ticket = await servicenow.find_incident_by_correlation(message.message_id)
+                    
+                    if existing_ticket:
+                        logger.info(f"Ticket already exists for message {message.message_id}: {existing_ticket.number}")
+                        # Don't send immediate acknowledgment or trigger workflow for existing tickets
+                        return JSONResponse({"status": "ticket_exists", "ticket_number": existing_ticket.number})
+                    
+                    # Send immediate acknowledgment only for new requests
                     google_chat = GoogleChatAPI(credentials_manager.google_credentials)
                     
                     # Add "spaces/" prefix if not present

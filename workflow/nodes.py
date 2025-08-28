@@ -185,12 +185,31 @@ async def servicenow_node(state: WorkflowState) -> WorkflowState:
         servicenow = ServiceNowAPI(credentials_manager.servicenow_credentials)
         
         created_tickets = []
+        newly_created_tickets = []  # Track which tickets were newly created
         summaries = state.get('summarized_tickets', [])
         categories = state.get('categorized_tickets', [])
         classified_messages = state.get('classified_messages', [])
         
         for i, (summary, category, classified_msg) in enumerate(zip(summaries, categories, classified_messages)):
             original_msg = classified_msg.original_message
+            correlation_id = original_msg.message_id
+            
+            # Check in-memory map first
+            existing_number = state.get('ticket_links', {}).get(correlation_id)
+            if existing_number:
+                logger.info(f"Incident already created for message {correlation_id}: {existing_number}; skipping creation")
+                continue
+            
+            # Check ServiceNow by correlation_id to avoid duplicates across runs
+            existing = await servicenow.find_incident_by_correlation(correlation_id)
+            if existing:
+                logger.info(f"Found existing incident {existing.number} for message {correlation_id}; linking and skipping creation")
+                if 'ticket_links' not in state:
+                    state['ticket_links'] = {}
+                state['ticket_links'][correlation_id] = existing.number
+                created_tickets.append(existing)
+                # Don't add to newly_created_tickets since this is an existing ticket
+                continue
             
             # Resolve caller and assignment using tools
             caller_email = getattr(original_msg, 'user_email', None)  # optional, may not exist
@@ -209,7 +228,8 @@ async def servicenow_node(state: WorkflowState) -> WorkflowState:
                 'category': category.category.value,
                 'subcategory': category.subcategory,
                 'urgency': category.urgency,
-                'assignment_group_name': group_name  # keep name for traceability
+                'assignment_group_name': group_name,  # keep name for traceability
+                'correlation_id': correlation_id,
             }
             
             # Merge resolved fields (caller_id, assignment_group, assigned_to)
@@ -217,17 +237,27 @@ async def servicenow_node(state: WorkflowState) -> WorkflowState:
             
             ticket = await servicenow.create_incident(ticket_data)
             created_tickets.append(ticket)
+            # Store ticket with its correlation_id for notification tracking
+            newly_created_tickets.append({
+                'ticket': ticket,
+                'correlation_id': correlation_id,
+                'original_message': original_msg
+            })
             
             # Track the ticket creation for this message
-            message_id = original_msg.message_id
             if 'ticket_links' not in state:
                 state['ticket_links'] = {}
-            state['ticket_links'][message_id] = ticket.number
+            state['ticket_links'][correlation_id] = ticket.number
             
-            logger.info(f"Created ticket {ticket.number} for message {message_id}")
+            logger.info(f"Created ticket {ticket.number} for message {correlation_id}")
         
         state['servicenow_tickets'] = created_tickets
-        logger.info(f"Created {len(created_tickets)} ServiceNow tickets")
+        state['newly_created_tickets'] = newly_created_tickets  # Store for notification node
+        logger.info(f"Created/linked {len(created_tickets)} ServiceNow tickets ({len(newly_created_tickets)} newly created)")
+        
+        # Log the newly created tickets for debugging
+        for i, ticket_info in enumerate(newly_created_tickets):
+            logger.info(f"  Newly created ticket {i+1}: {ticket_info['ticket'].number} for message {ticket_info['correlation_id']}")
         
     except Exception as e:
         logger.error(f"ServiceNow creation failed: {e}")
@@ -244,83 +274,75 @@ async def notification_node(state: WorkflowState) -> WorkflowState:
         credentials_manager = CredentialsManager()
         google_chat = GoogleChatAPI(credentials_manager.google_credentials)
         
-        classified_messages = state.get('classified_messages', [])
-        servicenow_tickets = state.get('servicenow_tickets', [])
+        newly_created_tickets = state.get('newly_created_tickets', [])
         notifications_sent = []
         
-        # Send notifications for all classified messages, even if ServiceNow failed
-        for i, classified_msg in enumerate(classified_messages):
-            original_msg = classified_msg.original_message
+        logger.info(f"Processing {len(newly_created_tickets)} newly created tickets for notifications")
+        
+        # Log the tickets that will be processed
+        for i, ticket_info in enumerate(newly_created_tickets):
+            logger.info(f"  Ticket {i+1}: {ticket_info['ticket'].number} for message {ticket_info['correlation_id']}")
+        
+        # Only send notifications for newly created tickets
+        for ticket_info in newly_created_tickets:
+            ticket = ticket_info['ticket']
+            original_msg = ticket_info['original_message']
             
-            # Check if we have a corresponding ServiceNow ticket
-            ticket = servicenow_tickets[i] if i < len(servicenow_tickets) else None
+            # Create ServiceNow ticket link
+            servicenow_url = credentials_manager.servicenow_credentials['instance_url']
+            ticket_link = f"{servicenow_url}/nav_to.do?uri=incident.do?sys_id={ticket.sys_id}"
             
-            if ticket:
-                # Create ServiceNow ticket link
-                servicenow_url = credentials_manager.servicenow_credentials['instance_url']
-                ticket_link = f"{servicenow_url}/nav_to.do?uri=incident.do?sys_id={ticket.sys_id}"
+            # Send notification to the space (since thread permissions are restricted)
+            try:
+                # Include user context in the notification
+                user_context = f"**From:** {original_msg.user_name}"
+                notification_text = f"""
+                ✅ **Ticket Created Successfully**
                 
-                # Send notification to the space (since thread permissions are restricted)
-                try:
-                    # Include user context in the notification
-                    user_context = f"**From:** {original_msg.user_name}"
-                    if ticket:
-                        notification_text = f"""
-                        ✅ **Ticket Created Successfully**
-                        
-                        {user_context}
-                        **Ticket Number:** [{ticket.number}]({ticket_link})
-                        **Title:** {ticket.short_description}
-                        **Priority:** {ticket.priority}
-                        **Status:** In Progress
-                        
-                        **Original Message:** "{original_msg.content[:100]}..."
-                        
-                        Your request has been automatically processed and assigned to the appropriate team. 
-                        You'll receive updates as the ticket progresses.
-                        
-                        [View Ticket in ServiceNow]({ticket_link})
-                        """
-                    else:
-                        # ServiceNow failed, send error notification
-                        notification_text = f"""
-                        ⚠️ **Ticket Creation Pending**
-                        
-                        {user_context}
-                        **Your Message:** "{original_msg.content[:100]}..."
-                        
-                        Your support request has been received and is being processed.
-                        Due to a temporary system issue, the ticket creation is delayed.
-                        
-                        Our team will create a ticket manually and update you shortly.
-                        Thank you for your patience.
-                        """
+                {user_context}
+                **Ticket Number:** [{ticket.number}]({ticket_link})
+                **Title:** {ticket.short_description}
+                **Priority:** {ticket.priority}
+                **Status:** In Progress
+                
+                **Original Message:** "{original_msg.content[:100]}..."
+                
+                Your request has been automatically processed and assigned to the appropriate team. 
+                You'll receive updates as the ticket progresses.
+                
+                [View Ticket in ServiceNow]({ticket_link})
+                """
+                
+                # Send to space instead of thread
+                # Ensure space_id has the correct format
+                space_id = original_msg.space_id
+                if not space_id.startswith('spaces/'):
+                    space_id = f"spaces/{space_id}"
+                
+                success = await google_chat.send_message(
+                    space_id=space_id,
+                    thread_id=None,  # Send to space instead of thread
+                    message=notification_text
+                )
+                
+                if success:
+                    notifications_sent.append({
+                        'ticket_number': ticket.number,
+                        'message_id': original_msg.message_id,
+                        'user_name': original_msg.user_name,
+                        'notification_sent': True,
+                        'timestamp': datetime.now().isoformat(),
+                        'ticket_link': ticket_link
+                    })
+                    logger.info(f"Notification sent for newly created ticket {ticket.number} for message {original_msg.message_id} from {original_msg.user_name}")
+                else:
+                    logger.error(f"Failed to send notification for message {original_msg.message_id}")
                     
-                    # Send to space instead of thread
-                    success = await google_chat.send_message(
-                        space_id=original_msg.space_id,
-                        thread_id=None,  # Send to space instead of thread
-                        message=notification_text
-                    )
-                    
-                    if success:
-                        notifications_sent.append({
-                            'ticket_number': ticket.number if ticket else 'PENDING',
-                            'message_id': original_msg.message_id,
-                            'user_name': original_msg.user_name,
-                            'notification_sent': True,
-                            'timestamp': datetime.now().isoformat(),
-                            'ticket_link': ticket_link if ticket else None
-                        })
-                        logger.info(f"Notification sent for message {original_msg.message_id} from {original_msg.user_name}")
-                    else:
-                        logger.error(f"Failed to send notification for message {original_msg.message_id}")
-                        
-                except Exception as e:
-                    logger.error(f"Error sending notification for message {original_msg.message_id}: {e}")
+            except Exception as e:
+                logger.error(f"Error sending notification for message {original_msg.message_id}: {e}")
         
         state['notifications_sent'] = notifications_sent
-        logger.info(f"Sent {len(notifications_sent)} notifications")
+        logger.info(f"Sent {len(notifications_sent)} notifications for newly created tickets")
         
     except Exception as e:
         logger.error(f"Notification failed: {e}")

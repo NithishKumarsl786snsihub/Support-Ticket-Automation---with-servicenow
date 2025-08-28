@@ -70,6 +70,7 @@ class WorkflowState(TypedDict, total=False):
     summarized_tickets: List[TicketSummary]
     categorized_tickets: List[TicketCategory]
     servicenow_tickets: List[Any]
+    newly_created_tickets: List[Dict[str, Any]]  # Track newly created tickets for notifications
     notifications_sent: List[Dict[str, Any]]
     current_step: str
     errors: List[str]
