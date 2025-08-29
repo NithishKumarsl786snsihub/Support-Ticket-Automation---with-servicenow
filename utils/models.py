@@ -36,6 +36,7 @@ class SupportMessage:
     content: str
     timestamp: datetime
     space_id: str
+    user_email: Optional[str] = None  # User's email address if available
 
 @dataclass
 class ClassifiedMessage:
@@ -63,9 +64,25 @@ class TicketCategory:
     urgency: str
     assignment_group: str
 
+@dataclass
+class ServiceNowTicket:
+    """Represents a ServiceNow incident ticket"""
+    sys_id: str
+    number: str
+    state: str
+    short_description: str
+    description: str
+    priority: str
+    category: str
+    assigned_to: str
+    created_on: str
+    updated_on: str
+
 class WorkflowState(TypedDict, total=False):
     """State object for the LangGraph workflow (dict-like for item assignment)"""
     messages: List[SupportMessage]
+    duplicate_messages: List[Dict[str, Any]]  # Messages identified as duplicates
+    unique_messages: List[SupportMessage]  # Messages that are unique requests
     classified_messages: List[ClassifiedMessage]
     summarized_tickets: List[TicketSummary]
     categorized_tickets: List[TicketCategory]

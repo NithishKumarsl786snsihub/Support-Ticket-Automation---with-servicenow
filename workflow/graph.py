@@ -6,12 +6,12 @@ Constructs the complete workflow for ticket automation
 from langgraph.graph import StateGraph, END
 
 from utils.models import WorkflowState
-from workflow.nodes import (
+from workflow.nodes_optimized import (
     scheduler_node,
     message_fetcher_node,
-    classifier_node,
-    summary_node,
-    category_extractor_node,
+    optimized_classifier_node as classifier_node,
+    optimized_summary_node as summary_node,
+    optimized_category_extractor_node as category_extractor_node,
     servicenow_node,
     notification_node,
     tracker_node

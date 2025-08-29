@@ -315,24 +315,52 @@ def build_incident_assignment_fields(
     group_name: Optional[str],
 ) -> Dict[str, Any]:
     fields: Dict[str, Any] = {}
+    
+    import logging
+    logger = logging.getLogger(__name__)
 
     # caller_id resolution
     caller: Optional[Dict[str, Any]] = None
+    
+    logger.info(f"Attempting to resolve caller: email={caller_email}, name={caller_name}")
+    
+    # Try email first (most reliable)
     if caller_email:
+        logger.info(f"Looking up user by email: {caller_email}")
         caller = find_user_by_email(caller_email)
+        if caller:
+            logger.info(f"Found user by email: {caller.get('name', 'Unknown')} (sys_id: {caller.get('sys_id', 'None')})")
+        else:
+            logger.warning(f"No user found by email: {caller_email}")
+    
+    # Try name if email lookup failed
     if not caller and caller_name:
+        logger.info(f"Looking up user by name: {caller_name}")
         caller = find_user_by_name(caller_name)
+        if caller:
+            logger.info(f"Found user by name: {caller.get('name', 'Unknown')} (sys_id: {caller.get('sys_id', 'None')})")
+        else:
+            logger.warning(f"No user found by name: {caller_name}")
+    
+    # Set caller_id if found
     if caller and caller.get("sys_id"):
         fields["caller_id"] = caller["sys_id"]
+        logger.info(f"Set caller_id to: {caller['sys_id']}")
+    else:
+        logger.warning("No caller_id set - user not found in ServiceNow")
 
     # assignment resolution
     if group_name:
+        logger.info(f"Resolving assignment group: {group_name}")
         group_sys_id, assigned_to_sys_id = resolve_group_and_assignee(group_name)
         if group_sys_id:
             fields["assignment_group"] = group_sys_id
+            logger.info(f"Set assignment_group to: {group_sys_id}")
         if assigned_to_sys_id:
             fields["assigned_to"] = assigned_to_sys_id
+            logger.info(f"Set assigned_to to: {assigned_to_sys_id}")
 
+    logger.info(f"Final assignment fields: {fields}")
     return fields
 
 # ---- Helpers for notification agent ----

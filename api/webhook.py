@@ -50,16 +50,30 @@ class WebhookHandler:
                     logger.warning("⚠️ No message data found in payload")
                     return JSONResponse({"status": "no_message"})
                 
+                # Extract user information
+                sender_info = message_data['sender']
+                user_id = sender_info['name'].split('/')[-1]
+                user_name = sender_info.get('displayName', 'Unknown')
+                
+                # Try to get user email from sender info
+                user_email = None
+                if 'email' in sender_info:
+                    user_email = sender_info['email']
+                
                 # Convert to SupportMessage
                 message = SupportMessage(
                     message_id=message_data['name'].split('/')[-1],
                     thread_id=message_data.get('thread', {}).get('name', '').split('/')[-1],
-                    user_id=message_data['sender']['name'].split('/')[-1],
-                    user_name=message_data['sender'].get('displayName', 'Unknown'),
+                    user_id=user_id,
+                    user_name=user_name,
                     content=message_data.get('text', ''),
                     timestamp=datetime.fromisoformat(message_data['createTime'].rstrip('Z')),
                     space_id=payload.get('space', {}).get('name', '').split('/')[-1]
                 )
+                
+                # Add user email to message if available
+                if user_email:
+                    message.user_email = user_email
                 logger.info(f"📨 Converted message: {message.content}")
                 logger.info(f"👤 User: {message.user_name}")
                 logger.info(f"🏠 Space ID: {message.space_id}")
